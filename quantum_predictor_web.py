@@ -233,22 +233,23 @@ def monte_carlo(df, velas, sl=None, tp=None, n_sim=10000):
 # ══════════════════════════════════════════════
 # NOTICIAS
 # ══════════════════════════════════════════════
+NEWS_API_KEY = "7068baa429b441f1b25d12a214af59c3"
+
 @st.cache_data(ttl=300)
 def obtener_noticias():
     try:
-        queries = ["Trump tariff market","stock market SPY federal reserve"]
+        queries = ["Trump tariff stock market","SPY QQQ federal reserve"]
         todas = []
         for q in queries:
-            url = ("https://gnews.io/api/v4/search"
+            # Intentar NewsAPI primero
+            url = ("https://newsapi.org/v2/everything"
                    "?q=" + q.replace(" ", "+") +
-                   "&lang=en&max=5&sortby=publishedAt"
-                   "&apikey=" + GNEWS_API_KEY)
+                   "&language=en&sortBy=publishedAt&pageSize=5"
+                   "&apiKey=" + NEWS_API_KEY)
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             articles = data.get("articles", [])
-            for art in articles:
-                art["source"] = {"name": art.get("source", {}).get("name", "")}
             todas.extend(articles)
         noticias = []
         vistos = set()
