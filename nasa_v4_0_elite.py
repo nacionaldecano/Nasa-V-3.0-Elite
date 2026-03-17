@@ -225,7 +225,32 @@ def days_to_expiry(exp_str: str) -> float:
 # OPCIONES
 # ─────────────────────────────────────────────
 
+POLYGON_KEY = "PlCkWQQpdg15eQ74SEHZBdF56giLyx60"
+
 def get_option_expirations(ticker: str):
+    """Obtiene expiraciones via Polygon API."""
+    import requests
+    try:
+        url = f"https://api.polygon.io/v3/reference/options/contracts"
+        params = {
+            "underlying_ticker": ticker,
+            "apiKey": POLYGON_KEY,
+            "limit": 250,
+            "sort": "expiration_date",
+            "order": "asc",
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        results = data.get("results", [])
+        exps = sorted(set(x["expiration_date"] for x in results if "expiration_date" in x))
+        # Filtrar solo expiraciones futuras
+        today = datetime.now().strftime("%Y-%m-%d")
+        exps = [e for e in exps if e >= today]
+        if exps:
+            return exps
+    except Exception as e:
+        pass
+    # Fallback a yfinance
     try:
         tk = yf.Ticker(ticker)
         exps = tk.options
@@ -234,11 +259,66 @@ def get_option_expirations(ticker: str):
         return []
 
 def load_option_chain(ticker: str, expiration: str):
+    """Carga la cadena de opciones via Polygon API con fallback a yfinance."""
+    import requests
     try:
-        tk = yf.Ticker(ticker)
-        chain = tk.option_chain(expiration)
-        return chain.calls.copy(), chain.puts.copy()
-    except Exception:
+        url = "https://api.polygon.io/v3/snapshot/options/" + ticker
+        params = {
+            "apiKey": POLYGON_KEY,
+            "expiration_date": expiration,
+            "limit": 250,
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            raise ValueError("No results from Polygon")
+
+        calls_list = []
+        puts_list  = []
+        for item in results:
+            det  = item.get("details", {})
+            day  = item.get("day", {})
+            grk  = item.get("greeks", {})
+            snap = item.get("last_quote", {})
+
+            row = {
+                "strike":            det.get("strike_price", np.nan),
+                "lastPrice":         day.get("close", np.nan),
+                "bid":               snap.get("bid", np.nan),
+                "ask":               snap.get("ask", np.nan),
+                "openInterest":      item.get("open_interest", 0),
+                "impliedVolatility": item.get("implied_volatility", 0.3),
+                "volume":            day.get("volume", 0),
+                "delta":             grk.get("delta", np.nan),
+                "gamma":             grk.get("gamma", np.nan),
+            }
+            if det.get("contract_type") == "call":
+                calls_list.append(row)
+            elif det.get("contract_type") == "put":
+                puts_list.append(row)
+
+        calls = pd.DataFrame(calls_list)
+        puts  = pd.DataFrame(puts_list)
+
+        if not calls.empty and not puts.empty:
+            return calls, puts
+        raise ValueError("Empty chain from Polygon")
+
+    except Exception as e:
+        # Fallback a yfinance
+        import time
+        for attempt in range(2):
+            try:
+                tk = yf.Ticker(ticker)
+                chain = tk.option_chain(expiration)
+                calls = chain.calls.copy()
+                puts  = chain.puts.copy()
+                if not calls.empty and not puts.empty:
+                    return calls, puts
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
         return pd.DataFrame(), pd.DataFrame()
 
 def compute_max_pain(calls: pd.DataFrame, puts: pd.DataFrame):
