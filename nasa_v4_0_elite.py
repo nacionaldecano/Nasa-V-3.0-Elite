@@ -228,15 +228,13 @@ def days_to_expiry(exp_str: str) -> float:
 POLYGON_KEY = "PlCkWQQpdg15eQ74SEHZBdF56giLyx60"
 
 def _make_yf_ticker(ticker: str):
-    """Crea un Ticker de yfinance con headers para evitar rate limiting."""
-    import requests
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    })
-    return yf.Ticker(ticker, session=session)
+    """Crea un Ticker de yfinance usando curl_cffi para evitar rate limiting."""
+    try:
+        from curl_cffi import requests as curl_requests
+        session = curl_requests.Session(impersonate="chrome")
+        return yf.Ticker(ticker, session=session)
+    except Exception:
+        return yf.Ticker(ticker)
 
 def get_option_expirations(ticker: str):
     """Obtiene expiraciones via yfinance."""
