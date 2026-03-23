@@ -227,32 +227,44 @@ def days_to_expiry(exp_str: str) -> float:
 
 POLYGON_KEY = "PlCkWQQpdg15eQ74SEHZBdF56giLyx60"
 
+def _make_yf_ticker(ticker: str):
+    """Crea un Ticker de yfinance con headers para evitar rate limiting."""
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+    return yf.Ticker(ticker, session=session)
+
 def get_option_expirations(ticker: str):
     """Obtiene expiraciones via yfinance."""
-    try:
-        tk = yf.Ticker(ticker)
-        exps = tk.options
-        today = datetime.now().strftime("%Y-%m-%d")
-        return [e for e in exps if e >= today] if exps else []
-    except Exception as e:
-        st.warning(f"[DEBUG expirations {ticker}]: {e}")
-        return []
+    import time
+    for attempt in range(3):
+        try:
+            tk = _make_yf_ticker(ticker)
+            exps = tk.options
+            today = datetime.now().strftime("%Y-%m-%d")
+            return [e for e in exps if e >= today] if exps else []
+        except Exception as e:
+            time.sleep(2)
+    return []
 
 def load_option_chain(ticker: str, expiration: str):
     """Carga la cadena de opciones via yfinance."""
     import time
     for attempt in range(3):
         try:
-            tk = yf.Ticker(ticker)
+            tk = _make_yf_ticker(ticker)
             chain = tk.option_chain(expiration)
             calls = chain.calls.copy()
             puts  = chain.puts.copy()
             if not calls.empty and not puts.empty:
                 return calls, puts
-            time.sleep(1)
+            time.sleep(2)
         except Exception as e:
-            st.warning(f"[DEBUG chain {ticker} {expiration} attempt {attempt}]: {e}")
-            time.sleep(1)
+            time.sleep(2)
     return pd.DataFrame(), pd.DataFrame()
 
 def compute_max_pain(calls: pd.DataFrame, puts: pd.DataFrame):
