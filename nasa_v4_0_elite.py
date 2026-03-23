@@ -365,66 +365,63 @@ def compute_gex(calls: pd.DataFrame, puts: pd.DataFrame,
     if calls.empty or puts.empty or pd.isna(spot):
         return np.nan, np.nan, "N/A", pd.DataFrame()
 
-    T   = days_to_expiry(expiration)
-    r   = 0.05
+    T = days_to_expiry(expiration)
+    r = 0.05
     rows = []
 
     for _, row in calls.iterrows():
-        K   = safe_float(row.get("strike"))
-        oi  = safe_float(row.get("openInterest"), 0)
-        iv  = safe_float(row.get("impliedVolatility"), 0.3)
+        K  = safe_float(row.get("strike"))
+        oi = safe_float(row.get("openInterest"), 0)
+        iv = safe_float(row.get("impliedVolatility"), 0.3)
         if pd.isna(K) or K <= 0 or iv <= 0: continue
-        g   = bs_gamma(spot, K, T, r, iv)
-        gex = g * oi * spot**2 * 0.01  # normalizado
-        rows.append({"strike": K, "type": "call", "gex": gex, "oi": oi})
+        g  = bs_gamma(spot, K, T, r, iv)
+        rows.append({"strike": K, "gex": g * oi * spot**2 * 0.01})
 
     for _, row in puts.iterrows():
-        K   = safe_float(row.get("strike"))
-        oi  = safe_float(row.get("openInterest"), 0)
-        iv  = safe_float(row.get("impliedVolatility"), 0.3)
+        K  = safe_float(row.get("strike"))
+        oi = safe_float(row.get("openInterest"), 0)
+        iv = safe_float(row.get("impliedVolatility"), 0.3)
         if pd.isna(K) or K <= 0 or iv <= 0: continue
-        g   = bs_gamma(spot, K, T, r, iv)
-        gex = g * oi * spot**2 * 0.01
-        rows.append({"strike": K, "type": "put", "gex": -gex, "oi": oi})  # puts = negativo
+        g  = bs_gamma(spot, K, T, r, iv)
+        rows.append({"strike": K, "gex": -g * oi * spot**2 * 0.01})  # puts = negativo
 
     if not rows:
         return np.nan, np.nan, "N/A", pd.DataFrame()
 
     gex_df = pd.DataFrame(rows)
     gex_by_strike = gex_df.groupby("strike")["gex"].sum().reset_index()
-    gex_by_strike = gex_by_strike.sort_values("strike")
 
-    total_gex = gex_by_strike["gex"].sum()
+    total_gex = float(gex_by_strike["gex"].sum())
 
-    # Gamma Flip: strike donde GEX acumulado cruza cero
-    gex_by_strike["cumgex"] = gex_by_strike["gex"].cumsum()
-    flip_candidates = gex_by_strike[gex_by_strike["cumgex"].diff().apply(
-        lambda x: True if pd.notna(x) else False
-    )]
-    # Buscar el cruce de signo
+    # Gamma Flip: acumular GEX ordenando strikes por distancia al spot (más cercano primero)
+    # El cruce de signo del cumGEX indica el nivel donde los dealers cambian de posición
+    gex_by_dist = gex_by_strike.copy()
+    gex_by_dist["dist"] = (gex_by_dist["strike"] - spot).abs()
+    gex_by_dist = gex_by_dist.sort_values("dist").reset_index(drop=True)
+    gex_by_dist["cumgex"] = gex_by_dist["gex"].cumsum()
+
     gamma_flip = np.nan
-    for i in range(1, len(gex_by_strike)):
-        prev = gex_by_strike.iloc[i-1]["cumgex"]
-        curr = gex_by_strike.iloc[i]["cumgex"]
+    for i in range(1, len(gex_by_dist)):
+        prev = gex_by_dist.iloc[i - 1]["cumgex"]
+        curr = gex_by_dist.iloc[i]["cumgex"]
         if pd.notna(prev) and pd.notna(curr) and prev * curr < 0:
-            gamma_flip = gex_by_strike.iloc[i]["strike"]
+            gamma_flip = float(gex_by_dist.iloc[i]["strike"])
             break
+
     if pd.isna(gamma_flip):
-        # Si no hay cruce, usar el strike con GEX más cercano a cero
+        # Fallback: strike con GEX individual más cercano a cero
         gex_by_strike["abs_gex"] = gex_by_strike["gex"].abs()
         gamma_flip = safe_float(gex_by_strike.loc[gex_by_strike["abs_gex"].idxmin(), "strike"])
 
-    if pd.notna(total_gex):
-        if total_gex > 0:
-            dealer_position = "Long Gamma 🟢"
-        elif total_gex < 0:
-            dealer_position = "Short Gamma 🔴"
-        else:
-            dealer_position = "Neutral ⚪"
-    else:
-        dealer_position = "N/A"
+    dealer_position = (
+        "Long Gamma 🟢"  if pd.notna(total_gex) and total_gex > 0 else
+        "Short Gamma 🔴" if pd.notna(total_gex) and total_gex < 0 else
+        "Neutral ⚪"
+    )
 
-    return total_gex, gamma_flip, dealer_position, gex_by_strike
+    # Devolver ordenado por strike para los charts
+    gex_by_strike_final = gex_by_strike.drop(columns=["abs_gex"], errors="ignore").sort_values("strike")
+    return total_gex, gamma_flip, dealer_position, gex_by_strike_final
 
 def compute_vol_skew(calls: pd.DataFrame, puts: pd.DataFrame, spot: float) -> float:
     """
