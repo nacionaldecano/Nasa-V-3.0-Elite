@@ -234,7 +234,8 @@ def get_option_expirations(ticker: str):
         exps = tk.options
         today = datetime.now().strftime("%Y-%m-%d")
         return [e for e in exps if e >= today] if exps else []
-    except Exception:
+    except Exception as e:
+        st.warning(f"[DEBUG expirations {ticker}]: {e}")
         return []
 
 def load_option_chain(ticker: str, expiration: str):
@@ -249,7 +250,8 @@ def load_option_chain(ticker: str, expiration: str):
             if not calls.empty and not puts.empty:
                 return calls, puts
             time.sleep(1)
-        except Exception:
+        except Exception as e:
+            st.warning(f"[DEBUG chain {ticker} {expiration} attempt {attempt}]: {e}")
             time.sleep(1)
     return pd.DataFrame(), pd.DataFrame()
 
