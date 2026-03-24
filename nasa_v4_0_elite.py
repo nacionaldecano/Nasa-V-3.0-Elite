@@ -225,44 +225,93 @@ def days_to_expiry(exp_str: str) -> float:
 # OPCIONES
 # ─────────────────────────────────────────────
 
-POLYGON_KEY = "PlCkWQQpdg15eQ74SEHZBdF56giLyx60"
-
-def _make_yf_ticker(ticker: str):
-    """Crea un Ticker de yfinance usando curl_cffi para evitar rate limiting."""
-    try:
-        from curl_cffi import requests as curl_requests
-        session = curl_requests.Session(impersonate="chrome")
-        return yf.Ticker(ticker, session=session)
-    except Exception:
-        return yf.Ticker(ticker)
+ALPACA_KEY    = "PKJ2R6JTYK5OOMOL7QLCWG375X"
+ALPACA_SECRET = "3R3wptS2JZXgkPsVZD7fnfkZyLxcH1U"
+ALPACA_DATA   = "https://data.alpaca.markets/v1beta1"
 
 def get_option_expirations(ticker: str):
-    """Obtiene expiraciones via yfinance."""
-    import time
-    for attempt in range(3):
-        try:
-            tk = _make_yf_ticker(ticker)
-            exps = tk.options
-            today = datetime.now().strftime("%Y-%m-%d")
-            return [e for e in exps if e >= today] if exps else []
-        except Exception as e:
-            time.sleep(2)
-    return []
+    """Obtiene expiraciones via Alpaca con fallback a yfinance."""
+    import requests as req, time
+    headers = {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
+    try:
+        url = f"{ALPACA_DATA}/options/contracts"
+        params = {"underlying_symbols": ticker, "limit": 200, "status": "active"}
+        r = req.get(url, headers=headers, params=params, timeout=10)
+        data = r.json()
+        contracts = data.get("option_contracts", [])
+        today = datetime.now().strftime("%Y-%m-%d")
+        exps = sorted(set(c["expiration_date"] for c in contracts if c.get("expiration_date", "") >= today))
+        if exps:
+            return exps
+    except Exception:
+        pass
+    try:
+        tk = yf.Ticker(ticker)
+        exps = tk.options
+        today = datetime.now().strftime("%Y-%m-%d")
+        return [e for e in exps if e >= today] if exps else []
+    except Exception:
+        return []
 
 def load_option_chain(ticker: str, expiration: str):
-    """Carga la cadena de opciones via yfinance."""
-    import time
-    for attempt in range(3):
+    """Carga la cadena de opciones via Alpaca con fallback a yfinance."""
+    import requests as req, time
+    headers = {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
+    try:
+        url = f"{ALPACA_DATA}/options/snapshots/{ticker}"
+        params = {"expiration_date": expiration, "limit": 1000, "feed": "indicative"}
+        r = req.get(url, headers=headers, params=params, timeout=15)
+        data = r.json()
+        snapshots = data.get("snapshots", {})
+        if not snapshots:
+            raise ValueError("No snapshots from Alpaca")
+        calls_list, puts_list = [], []
+        for symbol, snap in snapshots.items():
+            try:
+                # Symbol format e.g. QQQ250418C00450000
+                import re
+                m = re.search(r'([CP])(\d{8})$', symbol)
+                if not m:
+                    continue
+                opt_type = "call" if m.group(1) == "C" else "put"
+                strike = float(m.group(2)) / 1000.0
+            except Exception:
+                continue
+            det   = snap.get("latestQuote", {})
+            greek = snap.get("greeks", {})
+            row = {
+                "strike":            strike,
+                "lastPrice":         snap.get("latestTrade", {}).get("p", np.nan),
+                "bid":               det.get("bp", np.nan),
+                "ask":               det.get("ap", np.nan),
+                "openInterest":      snap.get("openInterest", 0),
+                "impliedVolatility": snap.get("impliedVolatility", 0.3),
+                "volume":            snap.get("dailyBar", {}).get("v", 0),
+                "delta":             greek.get("delta", np.nan),
+                "gamma":             greek.get("gamma", np.nan),
+            }
+            if opt_type == "call":
+                calls_list.append(row)
+            else:
+                puts_list.append(row)
+        calls = pd.DataFrame(calls_list)
+        puts  = pd.DataFrame(puts_list)
+        if not calls.empty and not puts.empty:
+            return calls, puts
+        raise ValueError("Empty chain from Alpaca")
+    except Exception:
+        pass
+    for attempt in range(2):
         try:
-            tk = _make_yf_ticker(ticker)
+            tk = yf.Ticker(ticker)
             chain = tk.option_chain(expiration)
             calls = chain.calls.copy()
             puts  = chain.puts.copy()
             if not calls.empty and not puts.empty:
                 return calls, puts
-            time.sleep(2)
-        except Exception as e:
-            time.sleep(2)
+            time.sleep(1)
+        except Exception:
+            time.sleep(1)
     return pd.DataFrame(), pd.DataFrame()
 
 def compute_max_pain(calls: pd.DataFrame, puts: pd.DataFrame):
